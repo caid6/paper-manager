@@ -10,10 +10,14 @@ const MAX_PDF_SIZE = 50 * 1024 * 1024
 const EXTRACTION_TIMEOUT_MS = 50000
 const MAX_PAGES_TO_SCAN = 5
 
+type PdfPageLike = {
+  getTextContent: () => Promise<any>
+}
+
 type PdfDocumentProxyLike = {
   numPages: number
   getMetadata: () => Promise<unknown>
-  getPage: (pageNumber: number) => Promise<unknown>
+  getPage: (pageNumber: number) => Promise<PdfPageLike>
 }
 
 export interface AIDetectedMetadata {
@@ -261,7 +265,7 @@ async function extractTextFromFirstPages(
       const page = await pdf.getPage(i)
       const content = await page.getTextContent()
       const pageText = content.items
-        .map((item) => 'str' in item && item.str ? item.str : '')
+        .map((item: { str?: string }) => 'str' in item && item.str ? item.str : '')
         .join(' ')
       texts.push(pageText)
     } catch (pageError) {
