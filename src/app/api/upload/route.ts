@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { NextRequest, NextResponse } from 'next/server'
 import { put } from '@vercel/blob'
 import { sanitizeStorageObjectName } from '@/lib/storage/sanitize-object-name'
+import { extractText, getDocumentProxy } from 'unpdf'
 
 export const runtime = 'nodejs'
 
@@ -37,6 +38,50 @@ export async function POST(req: NextRequest) {
     const arrayBuffer = await file.arrayBuffer()
     const fileBuffer = Buffer.from(new Uint8Array(arrayBuffer))
 
+    // Extract metadata using unpdf (pure Node.js, no DOM needed)
+    let metadataResult = {
+      title: file.name.replace(/\.pdf$/i, ''),
+      authors: '',
+      journal: '',
+      keywords: '',
+      _debug: {
+        source: 'filename_fallback',
+        needsAIRefinement: true,
+        processingTimeMs: 0,
+        fileSizeMB: file.size / (1024 * 1024),
+        textLength: 0,
+        truncated: false,
+      },
+    }
+
+    try {
+      const pdf = await getDocumentProxy(new Uint8Array(arrayBuffer))
+      const { text } = await extractText(pdf, { mergePages: true })
+      
+      const fullText = typeof text === 'string' ? text : (text as string[]).join('\n')
+      
+      const lines = fullText.split('\n').filter((line: string) => line.trim().length > 0)
+      const firstNonEmptyLine = lines[0] || file.name.replace(/\.pdf$/i, '')
+      
+      metadataResult = {
+        title: firstNonEmptyLine.slice(0, 200),
+        authors: '',
+        journal: '',
+        keywords: '',
+        _debug: {
+          source: 'unpdf_text_extraction',
+          needsAIRefinement: true,
+          processingTimeMs: Date.now(),
+          fileSizeMB: file.size / (1024 * 1024),
+          textLength: fullText.length,
+          truncated: fullText.length > 3000,
+        },
+      }
+    } catch (pdfError) {
+      console.error('[Upload] PDF text extraction failed:', pdfError)
+    }
+
+    // Upload to Vercel Blob
     const blob = await put(blobPath, fileBuffer, {
       access: 'public',
       contentType: 'application/pdf',
@@ -48,15 +93,12 @@ export async function POST(req: NextRequest) {
       file_size: file.size,
       signed_url: blob.url,
       metadata: {
-        title: file.name.replace(/\.pdf$/i, ''),
-        authors: '',
-        journal: '',
-        keywords: '',
+        title: metadataResult.title,
+        authors: metadataResult.authors,
+        journal: metadataResult.journal,
+        keywords: metadataResult.keywords,
       },
-      _debug: {
-        source: 'filename_fallback',
-        needsAIRefinement: true,
-      },
+      _debug: metadataResult._debug,
     })
 
   } catch (error: any) {
