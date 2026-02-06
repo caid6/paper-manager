@@ -1,3 +1,4 @@
+import { createCanvas } from '@napi-rs/canvas'
 import { createClient } from '@/lib/supabase/server'
 import { NextRequest, NextResponse } from 'next/server'
 import { extractMetadataFromBuffer } from '@/lib/pdf/metadata'
@@ -5,6 +6,19 @@ import { sanitizeStorageObjectName } from '@/lib/storage/sanitize-object-name'
 import { put } from '@vercel/blob'
 
 export const runtime = 'nodejs'
+
+if (typeof globalThis.DOMMatrix === 'undefined') {
+  globalThis.DOMMatrix = class DOMMatrix {
+    constructor() { return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 } }
+  } as any
+}
+if (typeof globalThis.Path2D === 'undefined') {
+  globalThis.Path2D = class Path2D {
+    rect() {}
+    moveTo() {}
+    lineTo() {}
+  } as any
+}
 
 export async function POST(req: NextRequest) {
   try {
