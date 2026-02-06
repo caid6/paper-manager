@@ -1,6 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextRequest, NextResponse } from 'next/server'
-import { deletePdfFromBlob } from '@/lib/storage/blob-storage'
 
 // GET: 获取用户的所有论文
 export async function GET() {
@@ -195,7 +194,9 @@ export async function DELETE(req: NextRequest) {
     const paper = paperResult as { file_url: string } | null
 
     if (paper?.file_url) {
-      await deletePdfFromBlob(paper.file_url)
+      // 从 Storage 删除文件
+      const filePath = paper.file_url.replace(/^.*\/papers\//, '')
+      await supabase.storage.from('papers').remove([filePath])
     }
 
     // 删除论文记录（级联删除 notes 和 chat_messages）

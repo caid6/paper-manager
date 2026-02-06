@@ -1,7 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { notFound } from 'next/navigation'
 import { PaperReader } from '@/components/paper/reader'
-import { isVercelBlobUrl } from '@/lib/storage/blob-storage'
 
 interface PaperPageProps {
   params: Promise<{ id: string }>
@@ -12,6 +11,7 @@ export default async function PaperPage({ params }: PaperPageProps) {
   const supabase = await createClient()
   const supabaseAny = supabase as any
 
+  // 获取论文信息
   const { data: paperResult, error } = await supabaseAny
     .from('papers')
     .select('*')
@@ -24,27 +24,23 @@ export default async function PaperPage({ params }: PaperPageProps) {
     notFound()
   }
 
+  // 获取笔记（如果存在）
   const { data: note } = await supabaseAny
     .from('notes')
     .select('*')
     .eq('paper_id', id)
     .single()
 
-  // Use Vercel Blob URL directly (public access)
-  // If it's still a Supabase URL (legacy), generate signed URL
-  let pdfUrl = paper.file_url
-  if (!isVercelBlobUrl(paper.file_url)) {
-    const { data: signedUrlData } = await supabase.storage
-      .from('papers')
-      .createSignedUrl(paper.file_url, 60 * 60)
-    pdfUrl = signedUrlData?.signedUrl || ''
-  }
+  // 获取 Signed URL 用于 PDF 查看
+  const { data: signedUrlData } = await supabase.storage
+    .from('papers')
+    .createSignedUrl(paper.file_url, 60 * 60) // 1小时有效期
 
   return (
     <PaperReader 
       paper={paper} 
       note={note} 
-      pdfUrl={pdfUrl} 
+      pdfUrl={signedUrlData?.signedUrl || ''} 
     />
   )
 }
