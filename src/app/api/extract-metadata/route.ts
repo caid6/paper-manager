@@ -12,7 +12,6 @@ export async function POST(req: NextRequest) {
   try {
     const contentType = req.headers.get('content-type') || ''
 
-    // Case 1: JSON with file_url (uploaded to Supabase first)
     if (contentType.includes('application/json')) {
       const supabase = await createClient()
       const { data: { user }, error: authError } = await supabase.auth.getUser()
@@ -26,26 +25,19 @@ export async function POST(req: NextRequest) {
         const fileUrl = String(body.file_url)
         const fileName = String(body.file_name || 'unknown.pdf')
 
-        // Optional safety guard: ensure users only access their own folder.
-        if (!fileUrl.startsWith(`${user.id}/`)) {
+        // Vercel Blob URLs are public and contain user ID in path
+        // Format: https://xxx.blob.vercel-storage.com/papers/{userId}/{filename}
+        const urlPattern = new RegExp(`/papers/${user.id}/`)
+        if (!urlPattern.test(fileUrl)) {
           return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
         }
 
-        const { data: signedUrlData, error: signedUrlError } = await supabase.storage
-          .from('papers')
-          .createSignedUrl(fileUrl, 60 * 5)
-
-        if (signedUrlError || !signedUrlData?.signedUrl) {
-          return NextResponse.json({ error: 'Failed to get signed URL' }, { status: 400 })
-        }
-
-        const signedUrl = signedUrlData.signedUrl
-        const rangeSupported = await supportsHttpRange(signedUrl)
+        const rangeSupported = await supportsHttpRange(fileUrl)
 
         if (rangeSupported) {
           try {
             const { result, attempts } = await withRetries(async () => {
-              const r = await extractMetadataFromUrl(signedUrl, fileName)
+              const r = await extractMetadataFromUrl(fileUrl, fileName)
               const retryable = r._debug?.source === 'parse_failed' || r._debug?.source === 'extraction_error'
               if (retryable) {
                 throw new Error(r._debug?.error || r._debug?.source || 'range_extract_failed')
@@ -70,8 +62,7 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // Fallback: download full PDF then parse from buffer (existing behavior)
-        const pdfResponse = await fetch(signedUrl)
+        const pdfResponse = await fetch(fileUrl)
         const arrayBuffer = await pdfResponse.arrayBuffer()
         const buffer = new Uint8Array(arrayBuffer)
 

@@ -2,26 +2,9 @@ import { createClient } from '@/lib/supabase/server'
 import { NextRequest, NextResponse } from 'next/server'
 import { extractMetadataFromBuffer } from '@/lib/pdf/metadata'
 import { sanitizeStorageObjectName } from '@/lib/storage/sanitize-object-name'
+import { put } from '@vercel/blob'
 
 export const runtime = 'nodejs'
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function isRetryableUploadError(error: any): boolean {
-  const msg = String(error?.message || '')
-  const orig = error?.originalError
-  const cause = orig?.cause
-  const causeCode = String(cause?.code || '')
-
-  // Undici socket reset / remote closed
-  if (causeCode === 'UND_ERR_SOCKET') return true
-  // Generic fetch failure
-  if (msg.includes('fetch failed')) return true
-
-  return false
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -50,7 +33,8 @@ export async function POST(req: NextRequest) {
 
     const timestamp = Date.now()
     const { sanitized: sanitizedName, changed: nameChanged } = sanitizeStorageObjectName(file.name)
-    const filePath = `${user.id}/${timestamp}-${sanitizedName}`
+    const blobPath = `papers/${user.id}/${timestamp}-${sanitizedName}`
+    
     if (nameChanged) {
       console.log('[Upload] Original filename sanitized for storage:', {
         original: file.name,
@@ -59,50 +43,21 @@ export async function POST(req: NextRequest) {
     }
 
     const arrayBuffer = await file.arrayBuffer()
-    // Create a complete copy of the buffer BEFORE parallel processing
-    // This prevents "detached ArrayBuffer" errors during concurrent access
-    const uint8Array = new Uint8Array(new Uint8Array(arrayBuffer))
-    const fileBuffer = Buffer.from(uint8Array) // copy from stable buffer
+    const fileBuffer = Buffer.from(new Uint8Array(arrayBuffer))
 
-    // Upload first (retries for transient network/socket errors), then extract metadata.
-    let uploadResult: any
-    let lastUploadError: any
+    // Upload to Vercel Blob
+    console.log('[Upload] Starting Vercel Blob upload...')
+    const blob = await put(blobPath, fileBuffer, {
+      access: 'public',
+      contentType: 'application/pdf',
+    })
+    console.log('[Upload] Vercel Blob upload successful:', blob.url)
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        console.log(`[Upload] Starting Supabase upload... attempt=${attempt}`)
-        const { data, error } = await supabase.storage
-          .from('papers')
-          .upload(filePath, fileBuffer, {
-            contentType: 'application/pdf',
-            upsert: false,
-          })
-
-        if (error) {
-          console.error('[Upload] Supabase upload error:', error)
-          throw error
-        }
-
-        console.log('[Upload] Supabase upload successful:', data)
-        uploadResult = data
-        lastUploadError = null
-        break
-      } catch (e: any) {
-        lastUploadError = e
-        const retryable = isRetryableUploadError(e)
-        console.error(`[Upload] Upload failed attempt=${attempt}, retryable=${retryable}`, e)
-        if (!retryable || attempt === 3) break
-        await sleep(250 * Math.pow(2, attempt - 1))
-      }
-    }
-
-    if (!uploadResult) {
-      throw new Error(`Upload process failed: ${lastUploadError?.message || lastUploadError || 'unknown_error'}`)
-    }
-
+    // Extract metadata
     console.log('[Upload] Starting metadata extraction...')
     let metadataResult: any
     try {
+      const uint8Array = new Uint8Array(arrayBuffer)
       metadataResult = await extractMetadataFromBuffer(uint8Array, file.name)
       console.log('Metadata extraction result:', metadataResult._debug?.source)
     } catch (e) {
@@ -123,15 +78,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const { data: signedUrlData } = await supabase.storage
-      .from('papers')
-      .createSignedUrl(uploadResult.path, 60 * 60 * 24 * 7)
-
     return NextResponse.json({
-      file_url: uploadResult.path,
+      file_url: blob.url,
       file_name: file.name,
       file_size: file.size,
-      signed_url: signedUrlData?.signedUrl,
+      signed_url: blob.url,
       metadata: {
         title: metadataResult.title,
         authors: metadataResult.authors,

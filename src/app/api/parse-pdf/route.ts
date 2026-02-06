@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { NextRequest, NextResponse } from 'next/server'
 import { extractText, getDocumentProxy } from 'unpdf'
 import { extractTextFromPdfUrl, supportsHttpRange, withRetries } from '@/lib/pdf/pdfjs-url-text'
+import { isVercelBlobUrl } from '@/lib/storage/blob-storage'
 
 export async function POST(req: NextRequest) {
   try {
@@ -20,7 +21,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Paper ID is required' }, { status: 400 })
     }
 
-    // 获取论文信息
     const { data: paperResult, error: paperError } = await supabaseAny
       .from('papers')
       .select('file_url')
@@ -34,25 +34,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Paper not found' }, { status: 404 })
     }
 
-    // 获取 PDF 文件的 signed URL
-    const { data: signedUrlData } = await supabase.storage
-      .from('papers')
-      .createSignedUrl(paper.file_url, 60 * 5) // 5分钟有效
+    const pdfUrl = paper.file_url
 
-    if (!signedUrlData?.signedUrl) {
-      return NextResponse.json({ error: 'Failed to get PDF URL' }, { status: 500 })
+    if (!pdfUrl) {
+      return NextResponse.json({ error: 'PDF URL not found' }, { status: 500 })
     }
 
-    const signedUrl = signedUrlData.signedUrl
-
-    // Prefer Range-based parsing (lower peak memory). Fallback to full download when unsupported.
-    const rangeSupported = await supportsHttpRange(signedUrl)
+    // Vercel Blob URLs are public, no need for signed URL
     const maxLength = 80000
+
+    // Try range-based parsing for better performance
+    const rangeSupported = await supportsHttpRange(pdfUrl)
 
     if (rangeSupported) {
       try {
         const { result, attempts } = await withRetries(
-          async () => extractTextFromPdfUrl(signedUrl, { maxChars: maxLength }),
+          async () => extractTextFromPdfUrl(pdfUrl, { maxChars: maxLength }),
           3
         )
 
@@ -83,8 +80,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Fallback: download full PDF then parse with unpdf (existing behavior)
-    const pdfResponse = await fetch(signedUrl)
+    // Fallback: download full PDF
+    const pdfResponse = await fetch(pdfUrl)
     const pdfBuffer = await pdfResponse.arrayBuffer()
 
     const pdf = await getDocumentProxy(new Uint8Array(pdfBuffer))
