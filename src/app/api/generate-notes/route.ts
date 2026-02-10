@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    const { paperId, paperContent, model: customModel } = await req.json()
+    const { paperId, paperContent } = await req.json()
     
     if (!paperId) {
       return new Response(
@@ -42,6 +42,20 @@ export async function POST(req: NextRequest) {
       )
     }
 
+    // 读取用户 AI 配置（复用当前请求认证上下文，避免二次获取 session 导致拿不到自定义 key）
+    const { data: profileData } = await supabase
+      .from('profiles')
+      .select('openai_api_key, api_provider, preferred_model, api_base_url')
+      .eq('id', user.id)
+      .maybeSingle()
+
+    const profile = (profileData || null) as {
+      openai_api_key?: string | null
+      api_provider?: string | null
+      preferred_model?: string | null
+      api_base_url?: string | null
+    } | null
+
     // Type assertion since Supabase generic typing is unreliable
     const paperData = paper as { id: string; title: string; abstract?: string; authors?: string }
 
@@ -54,13 +68,10 @@ Abstract: ${paperData.abstract || 'Not provided'}
 ${paperContent ? `Full Text Content:\n${paperContent.slice(0, 15000)}` : ''}
 `
 
-    // 动态获取 AI 客户端
-    const { client, model: defaultModel } = await getAIClient()
+    // 动态获取 AI 客户端（模型由服务端根据用户 profile 统一决定）
+    const { client, model: modelId } = await getAIClient(undefined, profile)
     
-    // 优先使用前端传递的模型
-    const modelId = customModel || defaultModel
-    
-    console.log(`[Generate Notes] Using model: ${modelId}, custom: ${!!customModel}`)
+    console.log(`[Generate Notes] Using model: ${modelId}`)
 
     // 流式生成笔记
     const result = await streamText({

@@ -1,63 +1,62 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  SelectScrollDownButton,
-  SelectScrollUpButton,
-} from '@/components/ui/select'
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Key, Loader2, Check, Sparkles, Globe, Tags, Plus, X, Server, ChevronDown } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
+import { DEFAULT_FREE_MODEL_ID } from '@/lib/ai/config'
 
 // API 提供商配置 - 包含系统默认选项
 const API_PROVIDERS = [
-  { 
-    id: 'system', 
-    name: '🎁 系统默认（免费）', 
+  {
+    id: 'system',
+    name: '🎁 系统默认（免费）',
     description: '使用 OpenRouter 免费模型，无需配置',
     icon: '🎁',
     requiresKey: false,
   },
-  { 
-    id: 'google', 
-    name: 'Google AI Studio', 
+  {
+    id: 'google',
+    name: 'Google AI Studio',
     description: '使用自己的 Google API Key',
     icon: '🔮',
     keyPlaceholder: 'AIzaSy...',
     helpUrl: 'https://aistudio.google.com/apikey',
     requiresKey: true,
   },
-  { 
-    id: 'openai', 
-    name: 'OpenAI', 
+  {
+    id: 'openai',
+    name: 'OpenAI',
     description: '官方 GPT 系列',
     icon: '🧠',
     keyPlaceholder: 'sk-...',
     helpUrl: 'https://platform.openai.com/api-keys',
     requiresKey: true,
   },
-  { 
-    id: 'openrouter', 
-    name: 'OpenRouter', 
+  {
+    id: 'openrouter',
+    name: 'OpenRouter',
     description: '200+ 模型聚合',
     icon: '🔀',
     keyPlaceholder: 'sk-or-...',
     helpUrl: 'https://openrouter.ai/keys',
     requiresKey: true,
   },
-  { 
-    id: 'custom', 
-    name: '自定义 API', 
+  {
+    id: 'custom',
+    name: '自定义 API',
     description: 'Cursor/本地/其他兼容 API',
     icon: '⚙️',
     keyPlaceholder: '你的 API Key',
@@ -68,55 +67,6 @@ const API_PROVIDERS = [
 
 type ProviderId = typeof API_PROVIDERS[number]['id']
 
-// 测试通过的免费模型列表（按测试结果排序）
-const SYSTEM_FREE_MODELS = [
-  // 第一梯队：快速稳定
-  { id: 'liquid/lfm-2.5-1.2b-instruct:free', name: 'LFM 2.5 1.2B', description: '快速稳定首选', priority: 1 },
-  { id: 'deepseek/deepseek-r1:free', name: 'DeepSeek R1', description: '推理强', priority: 2 },
-  
-  // 第二梯队：备用选择
-  { id: 'liquid/lfm-2.5-1.2b-thinking:free', name: 'LFM Thinking', description: '深度思考', priority: 3 },
-  { id: 'tngtech/deepseek-r1t-chimera:free', name: 'DeepSeek R1T', description: 'TNG优化版', priority: 4 },
-  { id: 'tngtech/deepseek-r1t2-chimera:free', name: 'DeepSeek R1T2', description: 'TNG优化版2', priority: 5 },
-  
-  // 第三梯队：较大模型
-  { id: 'nvidia/nemotron-nano-9b-v2:free', name: 'Nemotron Nano 9B', description: 'NVIDIA快速', priority: 6 },
-  { id: 'nvidia/nemotron-nano-12b-v2-vl:free', name: 'Nemotron VL 12B', description: 'NVIDIA视觉', priority: 7 },
-  { id: 'nvidia/nemotron-3-nano-30b-a3b:free', name: 'Nemotron 30B', description: 'NVIDIA强力', priority: 8 },
-  { id: 'arcee-ai/trinity-mini:free', name: 'Trinity Mini', description: '轻量', priority: 9 },
-  { id: 'arcee-ai/trinity-large-preview:free', name: 'Trinity Large', description: 'Arcee大模型', priority: 10 },
-  
-  // 第四梯队：其他优质模型
-  { id: 'stepfun/step-3.5-flash:free', name: 'Step 3.5 Flash', description: 'StepFun闪速', priority: 11 },
-  { id: 'upstage/solar-pro-3:free', name: 'Solar Pro 3', description: 'Upstage专业', priority: 12 },
-  { id: 'allenai/molmo-2-8b:free', name: 'Molmo 2 8B', description: 'AllenAI视觉', priority: 13 },
-  { id: 'z-ai/glm-4.5-air:free', name: 'GLM 4.5 Air', description: '智谱AI', priority: 14 },
-  { id: 'openrouter/free', name: 'Auto Router', description: '自动选择', priority: 15 },
-]
-
-// 各提供商推荐模型
-const PROVIDER_MODELS: Record<string, Array<{ id: string; name: string; description: string }>> = {
-  google: [
-    { id: 'gemini-2.0-flash-lite', name: 'Gemini 2.0 Flash Lite', description: '快速' },
-    { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash', description: '实验版' },
-    { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', description: '稳定快速' },
-    { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', description: '稳定旗舰' },
-  ],
-  openai: [
-    { id: 'gpt-4o-mini', name: 'GPT-4o Mini', description: '快速实惠' },
-    { id: 'gpt-4o', name: 'GPT-4o', description: '多模态' },
-    { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', description: '高性能' },
-    { id: 'o1-mini', name: 'o1-mini', description: '推理轻量' },
-  ],
-  openrouter: [
-    { id: 'anthropic/claude-3.5-sonnet-20241022', name: 'Claude 3.5 Sonnet', description: '推理强' },
-    { id: 'anthropic/claude-3-haiku-20240307', name: 'Claude 3 Haiku', description: '快速' },
-    { id: 'openai/gpt-4o', name: 'GPT-4o', description: 'OpenAI' },
-    { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', description: 'OpenAI Mini' },
-    { id: 'deepseek/deepseek-chat', name: 'DeepSeek V3', description: '性价比' },
-  ],
-}
-
 const LANGUAGES = [
   { id: 'zh', name: '中文', nativeName: '简体中文', flag: '🇨🇳' },
   { id: 'en', name: 'English', nativeName: 'English', flag: '🇺🇸' },
@@ -125,21 +75,29 @@ const LANGUAGES = [
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  
+  const [hasCustomKey, setHasCustomKey] = useState(false)
+
   // API 配置
   const [provider, setProvider] = useState<ProviderId>('system')
   const [apiKey, setApiKey] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
-  const [selectedModel, setSelectedModel] = useState('liquid/lfm-2.5-1.2b-instruct:free')
+  const [selectedModel, setSelectedModel] = useState(DEFAULT_FREE_MODEL_ID)
   const [customModel, setCustomModel] = useState('')
-  
+  const [availableModels, setAvailableModels] = useState<Array<{ id: string; name: string; description?: string }>>([])
+  const [availableModelsProvider, setAvailableModelsProvider] = useState<ProviderId>('system')
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelQuery, setModelQuery] = useState('')
+  const [modelVendor, setModelVendor] = useState<string>('all')
+  const [modelMenuOpen, setModelMenuOpen] = useState(false)
+  const modelSearchRef = useRef<HTMLInputElement>(null)
+
   // 原始值
   const [originalConfig, setOriginalConfig] = useState({
     provider: 'system' as ProviderId,
     apiKey: '',
-    model: 'liquid/lfm-2.5-1.2b-instruct:free',
+    model: DEFAULT_FREE_MODEL_ID,
   })
-  
+
   const [language, setLanguage] = useState<'zh' | 'en'>('zh')
   const [presetTags, setPresetTags] = useState<string[]>([])
   const [newTag, setNewTag] = useState('')
@@ -152,7 +110,7 @@ export default function SettingsPage() {
     if (savedTags) {
       try {
         setPresetTags(JSON.parse(savedTags))
-      } catch (e) {
+      } catch {
         console.error('Failed to parse preset tags')
       }
     }
@@ -162,25 +120,24 @@ export default function SettingsPage() {
     try {
       const res = await fetch('/api/profile')
       if (res.ok) {
-        const { profile } = await res.json()
+        const { profile, hasCustomKey } = await res.json()
         if (profile) {
-          // 检查是否有自定义 API key
-          const hasCustomKey = profile.openai_api_key && !profile.openai_api_key.includes('****')
-          
+          // 注意：profile.openai_api_key 在 GET 中始终是 masked，不可用于推断。
+          setHasCustomKey(!!hasCustomKey)
+
           // 如果没有自定义 key，默认使用系统免费模型
           const savedProvider = hasCustomKey ? (profile.api_provider || 'openrouter') : 'system'
-          const savedModel = hasCustomKey 
-            ? (profile.preferred_model || 'liquid/lfm-2.5-1.2b-instruct:free')
-            : (profile.preferred_model || 'liquid/lfm-2.5-1.2b-instruct:free')
-          
+          const savedModel = profile.preferred_model || DEFAULT_FREE_MODEL_ID
+
           setProvider(savedProvider as ProviderId)
-          setApiKey(profile.openai_api_key || '')
+          // 不把 masked key 填回输入框，避免用户“保存”时覆写真实 key
+          setApiKey('')
           setBaseUrl(profile.api_base_url || '')
           setSelectedModel(savedModel)
-          
+
           setOriginalConfig({
             provider: savedProvider as ProviderId,
-            apiKey: profile.openai_api_key || '',
+            apiKey: '',
             model: savedModel,
           })
         }
@@ -193,8 +150,13 @@ export default function SettingsPage() {
   }
 
   const handleSave = async () => {
-    // 如果选择了需要 key 的提供商但没有填写
-    if (provider !== 'system' && provider !== 'custom' && !apiKey) {
+    const providerCfg = API_PROVIDERS.find((p) => p.id === provider)
+    const requiresKey = !!providerCfg?.requiresKey
+    const hasExistingKeyForSameProvider = hasCustomKey && provider === originalConfig.provider
+    const hasNewKey = !!apiKey
+
+    // 如果需要 key，但既没有新 key，也不能复用已有 key（比如切换 provider）
+    if (provider !== 'system' && requiresKey && !hasNewKey && !hasExistingKeyForSameProvider) {
       toast.error('请输入 API Key')
       return
     }
@@ -202,30 +164,36 @@ export default function SettingsPage() {
     setSaving(true)
     try {
       const finalModel = customModel || selectedModel
-      
+
       // system 提供商映射到 openrouter（使用系统默认 OpenRouter API）
       const saveProvider = provider === 'system' ? 'openrouter' : provider
-      // system 不保存 key（使用系统环境变量）
-      const saveKey = provider === 'system' ? '' : apiKey
+      const body: Record<string, unknown> = {
+        preferred_model: finalModel,
+        api_provider: saveProvider,
+        api_base_url: baseUrl || '',
+      }
+      // system：明确清除 key；其他情况：只有用户输入了新 key 才更新 key（避免回写 masked）
+      if (provider === 'system') {
+        body.openai_api_key = ''
+      } else if (apiKey) {
+        body.openai_api_key = apiKey
+      }
 
       const res = await fetch('/api/profile', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          openai_api_key: saveKey,
-          preferred_model: finalModel,
-          api_provider: saveProvider,
-          api_base_url: baseUrl || '',
-        }),
+        body: JSON.stringify(body),
       })
 
       if (!res.ok) throw new Error('保存失败')
 
       setOriginalConfig({
         provider,
-        apiKey: saveKey,
+        apiKey: '',
         model: finalModel,
       })
+      // 保存成功后，如果用户输入过 key，认为已有自定义 key
+      if (provider !== 'system' && apiKey) setHasCustomKey(true)
       toast.success('设置已保存')
     } catch {
       toast.error('保存失败，请重试')
@@ -238,12 +206,12 @@ export default function SettingsPage() {
     setProvider(newProvider)
     // 切换到系统默认时，选择默认快速模型
     if (newProvider === 'system') {
-      setSelectedModel('liquid/lfm-2.5-1.2b-instruct:free')
+      setSelectedModel(DEFAULT_FREE_MODEL_ID)
       setApiKey('')
     }
   }
 
-  const hasChanges = 
+  const hasChanges =
     provider !== originalConfig.provider ||
     apiKey !== originalConfig.apiKey ||
     selectedModel !== originalConfig.model ||
@@ -280,9 +248,112 @@ export default function SettingsPage() {
   }
 
   const currentProvider = API_PROVIDERS.find(p => p.id === provider)
-  const availableModels = provider === 'system' 
-    ? SYSTEM_FREE_MODELS 
-    : PROVIDER_MODELS[provider] || []
+  const showKeySavedHint = provider !== 'system' && hasCustomKey && !apiKey
+  const selectedModelObj = availableModels.find((m) => m.id === selectedModel)
+  const selectedModelLabel = selectedModelObj?.name || selectedModel
+
+  useEffect(() => {
+    if (!modelMenuOpen) return
+    const t = setTimeout(() => modelSearchRef.current?.focus(), 0)
+    return () => clearTimeout(t)
+  }, [modelMenuOpen])
+
+  const vendors = (() => {
+    const set = new Set<string>()
+    for (const m of availableModels) {
+      const id = String(m.id || '')
+      const v = id.includes('/') ? id.split('/')[0] : 'other'
+      if (v) set.add(v)
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b))
+  })()
+
+  const filteredAllModels = (() => {
+    const q = modelQuery.trim().toLowerCase()
+    return availableModels.filter((m) => {
+      const id = String(m.id || '')
+      const v = id.includes('/') ? id.split('/')[0] : 'other'
+      if (modelVendor !== 'all' && v !== modelVendor) return false
+      if (!q) return true
+      const hay = `${m.id} ${m.name} ${m.description || ''}`.toLowerCase()
+      return hay.includes(q)
+    })
+  })()
+
+  // Only render a small window for UX/perf, but filtering must apply to the full list.
+  const filteredModels = filteredAllModels.slice(0, 100)
+
+  useEffect(() => {
+    let cancelled = false
+    const loadModels = async () => {
+      if (provider === 'custom') {
+        setAvailableModels([])
+        setAvailableModelsProvider(provider)
+        return
+      }
+
+      // provider/apiKey/baseUrl 变化时先清空旧列表，避免用“旧 provider 的模型列表”触发 fallback
+      setAvailableModels([])
+      setAvailableModelsProvider(provider)
+      setModelsLoading(true)
+      try {
+        console.log('[settings][models] request', { provider, hasApiKey: !!apiKey, hasBaseUrl: !!baseUrl, includeModelId: selectedModel })
+        const res = await fetch('/api/models', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            provider,
+            apiKey,
+            baseUrl,
+            includeModelId: selectedModel,
+          }),
+        })
+
+        if (!res.ok) {
+          throw new Error('Failed to fetch models')
+        }
+
+        const data = await res.json()
+        const models = Array.isArray(data.models) ? data.models : []
+        console.log('[settings][models] response', {
+          provider,
+          count: models.length,
+          hasSelected: models.some((m: { id: string }) => m.id === selectedModel),
+          head: models.slice(0, 5).map((m: { id: string }) => m.id),
+        })
+        if (!cancelled) {
+          setAvailableModelsProvider(provider)
+          setAvailableModels(models)
+        }
+      } catch (error) {
+        console.error('Failed to load models:', error)
+        if (!cancelled) setAvailableModels([])
+        toast.error('获取模型列表失败')
+      } finally {
+        if (!cancelled) setModelsLoading(false)
+      }
+    }
+
+    loadModels()
+    return () => {
+      cancelled = true
+    }
+  }, [provider, apiKey, baseUrl, selectedModel])
+
+  useEffect(() => {
+    if (customModel) return
+    if (modelsLoading) return
+    if (availableModels.length === 0) return
+    // 防止“provider 已切换，但 availableModels 还是旧 provider 的列表”时误触发回退
+    if (availableModelsProvider !== provider) return
+    if (availableModels.some((m) => m.id === selectedModel)) return
+    console.log('[settings][models] selectedModel missing, fallback', {
+      selectedModel,
+      fallback: availableModels[0]?.id,
+      availableCount: availableModels.length,
+    })
+    setSelectedModel(availableModels[0].id)
+  }, [availableModels, selectedModel, customModel, modelsLoading, provider, availableModelsProvider])
 
   if (loading) {
     return (
@@ -319,23 +390,23 @@ export default function SettingsPage() {
             {API_PROVIDERS.map((p) => {
               const isSelected = provider === p.id
               const isSystem = p.id === 'system'
-              
+
               return (
                 <button
                   key={p.id}
                   onClick={() => handleProviderChange(p.id)}
                   className={cn(
                     'w-full flex items-center gap-3 p-4 rounded-xl border transition-all text-left',
-                    isSelected 
+                    isSelected
                       ? isSystem
                         ? 'border-emerald-500/50 bg-emerald-500/10'
-                        : 'border-violet-500/50 bg-violet-500/5' 
+                        : 'border-violet-500/50 bg-violet-500/5'
                       : 'border-zinc-800 hover:border-zinc-700 bg-zinc-800/30'
                   )}
                 >
                   <div className={cn(
                     'w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors shrink-0',
-                    isSelected 
+                    isSelected
                       ? isSystem ? 'border-emerald-500 bg-emerald-500' : 'border-violet-500 bg-violet-500'
                       : 'border-zinc-600'
                   )}>
@@ -389,11 +460,16 @@ export default function SettingsPage() {
                   placeholder={currentProvider?.keyPlaceholder || 'API Key'}
                   className="bg-zinc-800/50 border-zinc-700 text-zinc-100 placeholder:text-zinc-600"
                 />
+                {showKeySavedHint && (
+                  <div className="text-xs text-zinc-500">
+                    已保存 API Key（为安全不显示）。留空表示继续使用已保存的 Key。
+                  </div>
+                )}
                 {currentProvider?.helpUrl && (
                   <p className="text-xs text-zinc-500">
-                    <a 
-                      href={currentProvider.helpUrl} 
-                      target="_blank" 
+                    <a
+                      href={currentProvider.helpUrl}
+                      target="_blank"
                       rel="noopener noreferrer"
                       className="text-amber-400 hover:text-amber-300"
                     >
@@ -435,36 +511,99 @@ export default function SettingsPage() {
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            {/* 模型下拉选择 */}
+            {/* 模型下拉选择（下拉内可搜索，类似 antd showSearch） */}
             <div className="space-y-2">
               <Label className="text-zinc-300">选择模型</Label>
-              <Select
-                value={selectedModel}
-                onValueChange={(value) => {
-                  setSelectedModel(value)
-                  setCustomModel('')
-                }}
-              >
-                <SelectTrigger className="bg-zinc-800/50 border-zinc-700 text-zinc-100 hover:border-zinc-600">
-                  <SelectValue placeholder="选择模型" />
-                </SelectTrigger>
-                <SelectContent className="max-h-80 overflow-y-auto bg-zinc-900 border-zinc-800">
-                  <SelectScrollUpButton className="flex justify-center py-1" />
-                  {availableModels.map((model) => (
-                    <SelectItem
-                      key={model.id}
-                      value={model.id}
-                      className="cursor-pointer hover:bg-zinc-800 focus:bg-zinc-800"
+              <DropdownMenu open={modelMenuOpen} onOpenChange={setModelMenuOpen} modal={false}>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="w-full flex items-center justify-between rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-2 text-sm text-zinc-100 hover:border-zinc-600"
+                  >
+                    <span className="truncate">{selectedModelLabel}</span>
+                    <ChevronDown className="w-4 h-4 text-zinc-400 shrink-0" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  sideOffset={6}
+                  className="w-[min(520px,calc(100vw-2rem))] bg-zinc-900 border-zinc-800 p-2"
+                  onCloseAutoFocus={(e: Event) => {
+                    // Keep focus where it was (avoid jumping).
+                    e.preventDefault()
+                  }}
+                >
+                  <div className="flex flex-col sm:flex-row gap-2 p-1">
+                    <select
+                      value={modelVendor}
+                      onChange={(e) => setModelVendor(e.target.value)}
+                      className="h-9 rounded-md border border-zinc-700 bg-zinc-950/40 px-2 text-sm text-zinc-200 outline-none focus:border-zinc-600 sm:w-[170px]"
                     >
-                      <div className="flex items-center gap-2">
-                        <span className="text-zinc-200">{model.name}</span>
-                        <span className="text-xs text-zinc-500">{model.description}</span>
-                      </div>
-                    </SelectItem>
-                  ))}
-                  <SelectScrollDownButton className="flex justify-center py-1" />
-                </SelectContent>
-              </Select>
+                      <option value="all">全部厂商</option>
+                      {vendors.map((v) => (
+                        <option key={v} value={v}>
+                          {v === 'other' ? '其他/无前缀' : v}
+                        </option>
+                      ))}
+                    </select>
+                    <Input
+                      ref={modelSearchRef}
+                      value={modelQuery}
+                      onChange={(e) => setModelQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        // Stop menu typeahead from stealing focus on each keystroke.
+                        e.stopPropagation()
+                      }}
+                      placeholder="在下拉中输入搜索（name / id / 描述）"
+                      className="h-9 bg-zinc-950/40 border-zinc-700 text-zinc-100 placeholder:text-zinc-600"
+                    />
+                  </div>
+
+                  <div className="px-2 pb-2 text-xs text-zinc-500">
+                    {modelsLoading
+                      ? '正在加载模型…'
+                      : `显示 ${filteredModels.length} / ${filteredAllModels.length}（总 ${availableModels.length}）`}
+                  </div>
+
+                  <DropdownMenuSeparator className="bg-zinc-800" />
+
+                  {modelsLoading ? (
+                    <div className="px-3 py-2 text-sm text-zinc-500">正在加载模型...</div>
+                  ) : filteredModels.length === 0 ? (
+                    <div className="px-3 py-2 text-sm text-zinc-500">无匹配模型</div>
+                  ) : (
+                    <div className="max-h-80 overflow-y-auto">
+                      {filteredModels.map((model) => {
+                        const isSelected = model.id === selectedModel
+                        return (
+                          <DropdownMenuItem
+                            key={model.id}
+                            onSelect={() => {
+                              setSelectedModel(model.id)
+                              setCustomModel('')
+                            }}
+                            className="cursor-pointer hover:bg-zinc-800 focus:bg-zinc-800"
+                          >
+                            <div className="flex items-start gap-2 w-full">
+                              <div className="w-4 pt-0.5 shrink-0">
+                                {isSelected && <Check className="w-4 h-4 text-emerald-400" />}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="text-zinc-200 truncate">{model.name}</span>
+                                  {model.description && (
+                                    <span className="text-xs text-zinc-500 shrink-0">{model.description}</span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-zinc-500 truncate">{model.id}</div>
+                              </div>
+                            </div>
+                          </DropdownMenuItem>
+                        )
+                      })}
+                    </div>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
 
             {/* 自定义模型输入 */}
@@ -502,8 +641,8 @@ export default function SettingsPage() {
                 onClick={() => handleLanguageChange(lang.id)}
                 className={cn(
                   'flex-1 flex items-center justify-center gap-2 p-3 rounded-xl border transition-all',
-                  language === lang.id 
-                    ? 'border-blue-500/50 bg-blue-500/5' 
+                  language === lang.id
+                    ? 'border-blue-500/50 bg-blue-500/5'
                     : 'border-zinc-800 hover:border-zinc-700 bg-zinc-800/30'
                 )}
               >

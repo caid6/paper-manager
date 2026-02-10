@@ -3,6 +3,7 @@ import { getAIClient } from '@/lib/ai/openai'
 import { generateText } from 'ai'
 import { DOI_PREFIX_MAP, NORMALIZED_JOURNAL_MAP, COMMON_JOURNALS } from '@/data/journal-recognition'
 import { ensurePdfjsWorker } from '@/lib/pdf/pdfjs-worker'
+import { ensureDOMMatrix } from '@/lib/pdf/dommatrix-polyfill'
 
 const MAX_EXTRACTED_TEXT_LENGTH = 50000
 const AI_METADATA_TEXT_LENGTH = 3000
@@ -32,6 +33,7 @@ type PdfjsModuleLike = {
 let pdfjsPromise: Promise<PdfjsModuleLike> | null = null
 async function getPdfjs(): Promise<PdfjsModuleLike> {
   if (!pdfjsPromise) {
+    ensureDOMMatrix()
     pdfjsPromise = import('pdfjs-dist/legacy/build/pdf.mjs').then((m) => m as unknown as PdfjsModuleLike)
   }
   return pdfjsPromise
@@ -42,6 +44,7 @@ export interface AIDetectedMetadata {
   authors: string
   journal: string
   keywords: string
+  abstract: string
 }
 
 export interface ExtractMetadataResult extends AIDetectedMetadata {
@@ -57,6 +60,54 @@ export interface ExtractMetadataResult extends AIDetectedMetadata {
   }
 }
 
+function splitKeywords(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw
+      .map((x) => String(x || '').trim())
+      .filter(Boolean)
+  }
+  const text = String(raw || '').trim()
+  if (!text) return []
+  return text
+    .split(/[,\n，；;|/]/g)
+    .map((x) => x.replace(/^\d+[\.\)\s]+/, '').trim())
+    .filter(Boolean)
+}
+
+function uniqueKeywords(list: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const kw of list) {
+    const norm = kw.toLowerCase().replace(/\s+/g, ' ').trim()
+    if (!norm) continue
+    if (seen.has(norm)) continue
+    seen.add(norm)
+    out.push(kw)
+  }
+  return out
+}
+
+function ensureKeywordQuality(args: {
+  rawKeywords: string
+  title: string
+  journal: string
+  abstract: string
+  processedText: string
+}): string {
+  const fromAI = splitKeywords(args.rawKeywords)
+  const fromTitle = splitKeywords(inferKeywordsFromTitle(args.title, args.journal))
+
+  // AI 优先，但数量不足时自动补齐，避免只返回 1 个关键词。
+  const merged = uniqueKeywords([...fromAI, ...fromTitle]).slice(0, 5)
+  if (merged.length >= 3) {
+    return merged.join(', ')
+  }
+  return uniqueKeywords([...fromTitle]).slice(0, 5).join(', ')
+}
+
+// Note: abstract extraction for storage should be conservative. We only persist when we can
+// confidently find an explicit label ("Abstract"/"摘要") to avoid saving arbitrary leading text.
+
 export async function extractMetadataFromBuffer(
   buffer: Uint8Array,
   fileName: string
@@ -69,6 +120,7 @@ export async function extractMetadataFromBuffer(
       authors: '',
       journal: '',
       keywords: '',
+      abstract: '',
       _debug: {
         source: 'size_exceeded',
         needsAIRefinement: true,
@@ -201,12 +253,16 @@ async function performExtraction(
   let finalAuthor = authorRaw || ''
   let finalJournal = ''
   let keywords = ''
+  let abstract = ''
 
   let processedText = extractedText
   if (extractedText.length > MAX_EXTRACTED_TEXT_LENGTH) {
     processedText = extractedText.substring(0, MAX_EXTRACTED_TEXT_LENGTH) + 
       '\n\n[... 内容已截断，论文较长 ...]'
   }
+
+  // Best-effort abstract extraction for storage (strict; keep empty if uncertain).
+  abstract = extractAbstractStrict(extractedText)
 
   if (needsAIRefinement) {
     console.log('Using AI for full metadata extraction...')
@@ -224,8 +280,18 @@ async function performExtraction(
       finalJournal = aiMetadata.journal
       console.log('AI Journal:', finalJournal)
     }
-    keywords = aiMetadata.keywords
+    keywords = ensureKeywordQuality({
+      rawKeywords: aiMetadata.keywords,
+      title: finalTitle,
+      journal: finalJournal,
+      abstract,
+      processedText,
+    })
     console.log('AI Keywords:', keywords)
+    if (!abstract && aiMetadata.abstract) {
+      abstract = aiMetadata.abstract
+      console.log('AI Abstract:', abstract.slice(0, 160))
+    }
   } else {
     console.log('Using heuristic extraction...')
     
@@ -246,10 +312,13 @@ async function performExtraction(
       title: finalTitle,
       journal: finalJournal
     })
-    keywords = keywordResult.keywords || ''
-    if (!keywords) {
-      keywords = inferKeywordsFromTitle(finalTitle, finalJournal)
-    }
+    keywords = ensureKeywordQuality({
+      rawKeywords: keywordResult.keywords || '',
+      title: finalTitle,
+      journal: finalJournal,
+      abstract,
+      processedText,
+    })
     console.log('Keywords:', keywords)
   }
 
@@ -260,6 +329,7 @@ async function performExtraction(
     authors: finalAuthor,
     journal: finalJournal,
     keywords,
+    abstract,
     _debug: {
       source: needsAIRefinement ? 'ai_metadata_refinement' : 'heuristic_with_ai_keywords',
       needsAIRefinement,
@@ -310,6 +380,7 @@ function createErrorResult(
     authors: '',
     journal: '',
     keywords: '',
+    abstract: '',
     _debug: {
       source,
       needsAIRefinement: true,
@@ -474,18 +545,44 @@ function extractAbstractFromText(text: string): string {
   return text.substring(0, 1500)
 }
 
+function extractAbstractStrict(text: string): string {
+  if (!text) return ''
+  const t = String(text).replace(/\s+/g, ' ').trim()
+  if (!t) return ''
+
+  const findLabel = (re: RegExp) => {
+    const m = re.exec(t)
+    return m && typeof m.index === 'number' ? { index: m.index, len: m[0].length } : null
+  }
+
+  const zh = findLabel(/摘要\s*[:：]?\s*/i)
+  const en = findLabel(/\babstract\b\s*[:.\-–—]?\s*/i)
+  const pick = zh && en ? (zh.index <= en.index ? zh : en) : (zh || en)
+  if (!pick) return ''
+
+  const after = t.slice(pick.index + pick.len).trim()
+  if (!after) return ''
+
+  const endRe = /(\bkeywords?\b|\bindex\s+terms\b|\bintroduction\b|\b1\s+introduction\b|关键词|引言|目录)\s*[:：]?/i
+  const endM = endRe.exec(after)
+  const body = (endM ? after.slice(0, endM.index) : after).trim()
+  const cleaned = body.replace(/\s+/g, ' ').trim()
+  if (cleaned.length < 80) return ''
+  return cleaned.length > 4000 ? cleaned.slice(0, 4000).trim() : cleaned
+}
+
 async function refineMetadataWithAI(
   extractedText: string,
   processedText: string,
   context?: { title?: string; journal?: string }
 ): Promise<AIDetectedMetadata> {
   try {
-    const { client, model } = await getAIClient()
+    const { client, model, provider } = await getAIClient()
 
     const aiTextChunk = extractedText.substring(0, AI_METADATA_TEXT_LENGTH)
     const abstract = extractAbstractFromText(processedText)
 
-    const prompt = `分析这篇学术论文，提取完整的元数据信息。
+    const basePrompt = `分析这篇学术论文，提取完整的元数据信息。
 
 论文标题：${context?.title || '未知'}
 期刊：${context?.journal || '未知'}
@@ -501,38 +598,52 @@ ${abstract.substring(0, 1500)}
 2. 作者列表（多人用逗号分隔）
 3. 期刊/会议名称
 4. 3-5 个中文关键词
+5. 论文摘要（优先返回论文原文摘要；<= 1200 字符）
 
 只返回 JSON 格式：
 {
   "title": "论文的真实标题",
   "authors": "作者1, 作者2, 作者3",
   "journal": "期刊名称或会议名称",
-  "keywords": "关键词1, 关键词2, 关键词3"
+  "keywords": "关键词1, 关键词2, 关键词3",
+  "abstract": "论文摘要"
 }`
 
-    const result = await generateText({
-      model: client(model),
-      prompt,
-      maxOutputTokens: 1000,
-      temperature: 0.2,
-    })
+    const strictRetryPrompt = `${basePrompt}
 
-    console.log('AI model:', model)
+重要补充要求：
+- 只输出一行 JSON，不要 Markdown，不要代码块，不要解释。
+- keywords 必须是 3-5 个中文关键词，用英文逗号分隔。`
 
-    const match = result.text.match(/\{[\s\S]*\}/)
-    if (match) {
+    const prompts = [basePrompt, strictRetryPrompt]
+
+    console.log('AI model for metadata:', model, 'provider:', provider)
+
+    for (let i = 0; i < prompts.length; i++) {
+      const result = await generateText({
+        model: client(model),
+        prompt: prompts[i],
+        maxOutputTokens: 1000,
+        temperature: i === 0 ? 0.2 : 0,
+      })
+
+      const match = result.text.match(/\{[\s\S]*\}/)
+      if (!match) continue
+
       try {
         const parsed = JSON.parse(match[0])
-        if (parsed.title || parsed.authors || parsed.journal || parsed.keywords) {
+        const keywords = typeof parsed.keywords === 'string' ? parsed.keywords.trim() : ''
+        if (parsed.title || parsed.authors || parsed.journal || keywords || parsed.abstract) {
           return {
             title: parsed.title || '',
             authors: parsed.authors || '',
             journal: parsed.journal || '',
-            keywords: parsed.keywords || ''
+            keywords,
+            abstract: typeof parsed.abstract === 'string' ? parsed.abstract.slice(0, 2000) : ''
           }
         }
       } catch {
-        console.warn('Failed to parse AI metadata JSON')
+        // try next attempt
       }
     }
 
@@ -540,7 +651,8 @@ ${abstract.substring(0, 1500)}
       title: '',
       authors: '',
       journal: '',
-      keywords: ''
+      keywords: '',
+      abstract: ''
     }
   } catch (error) {
     console.error('AI metadata refinement failed:', error)
@@ -548,7 +660,8 @@ ${abstract.substring(0, 1500)}
       title: '',
       authors: '',
       journal: '',
-      keywords: ''
+      keywords: '',
+      abstract: ''
     }
   }
 }
@@ -583,6 +696,5 @@ function inferKeywordsFromTitle(title: string, journal: string): string {
   }
 
   const list = Array.from(kws)
-  if (list.length < 3) list.push('科学研究', '生物医学')
   return list.slice(0, 5).join(', ')
 }
